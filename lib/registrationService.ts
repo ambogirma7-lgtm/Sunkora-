@@ -147,19 +147,42 @@ export async function getRegistrationByTelegramId(telegramUserId: string): Promi
   return null;
 }
 
+import {
+  normalizePhoneNumber,
+  normalizeFullName,
+  findDuplicatePhone,
+  findDuplicateName,
+  findDuplicateRegistration,
+  DuplicateCheckMatch,
+} from './registrationUtils';
+
+export async function checkDuplicatePhone(phoneNumber: string, excludeId?: string): Promise<DuplicateCheckMatch> {
+  const all = await getAllRegistrations();
+  return findDuplicatePhone(all as any, phoneNumber, excludeId);
+}
+
+export async function checkDuplicateFullName(fullName: string, excludeId?: string): Promise<DuplicateCheckMatch> {
+  const all = await getAllRegistrations();
+  return findDuplicateName(all as any, fullName, excludeId);
+}
+
+export async function checkDuplicate(
+  fullName: string,
+  phoneNumber: string,
+  excludeId?: string
+): Promise<DuplicateCheckMatch> {
+  const all = await getAllRegistrations();
+  return findDuplicateRegistration(all as any, fullName, phoneNumber, excludeId);
+}
+
 export async function getRegistrationByPhone(phone: string): Promise<RegistrationRecord | null> {
   try {
-    const cleanPhone = phone.replace(/[^0-9+]/g, '');
-    const q = query(
-      collection(db, 'registrations'),
-      where('phoneNumber', '==', cleanPhone),
-      limit(1)
-    );
-    const snap = await getDocs(q);
-    if (!snap.empty) {
-      const docSnap = snap.docs[0];
-      return { id: docSnap.id, ...(docSnap.data() as any) } as RegistrationRecord;
-    }
+    const all = await getAllRegistrations();
+    const targetNorm = normalizePhoneNumber(phone);
+    if (!targetNorm) return null;
+
+    const match = all.find((r) => normalizePhoneNumber(r.phoneNumber || '') === targetNorm);
+    return match || null;
   } catch (err) {
     console.error('Error fetching registration by phone:', err);
   }
@@ -181,6 +204,22 @@ export async function saveRegistration(
     : `reg_${record.telegramUserId}`;
 
   const existing = isProxy ? null : await getRegistrationByTelegramId(record.telegramUserId);
+
+  // STRICT DUPLICATE PREVENTION: Check both phone and full name across all registered records
+  const all = await getAllRegistrations();
+  const dup = findDuplicateRegistration(
+    all as any,
+    record.fullName,
+    record.phoneNumber,
+    existing?.id
+  );
+
+  if (dup.isDuplicate) {
+    throw new Error(
+      dup.message ||
+        `ይቅርታ፣ ይህ ስልክ ቁጥር ወይም ሙሉ ስም ቀደም ሲል በሲስተሙ ውስጥ ተመዝግቧል። ድርብ ምዝገባ አይፈቀድም።`
+    );
+  }
 
   const finalRecord: RegistrationRecord = {
     id: docId,

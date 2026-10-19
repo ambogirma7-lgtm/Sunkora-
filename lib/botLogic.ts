@@ -11,6 +11,9 @@ import {
   getAllRegistrations,
   searchRegistrations,
   generateCSV,
+  checkDuplicatePhone,
+  checkDuplicateFullName,
+  checkDuplicate,
   RegistrationRecord,
 } from './registrationService';
 
@@ -705,6 +708,18 @@ bot.on('contact', async (ctx) => {
   if (session.step === 'ASK_PHONE') {
     let phone = ctx.message.contact.phone_number;
     if (!phone.startsWith('+')) phone = `+${phone}`;
+
+    // DUPLICATE PHONE CHECK
+    const dup = await checkDuplicatePhone(phone);
+    if (dup.isDuplicate) {
+      return ctx.reply(
+        `⚠️ <b>ይቅርታ፣ ይህ ስልክ ቁጥር (${phone}) ቀደም ሲል በ "${dup.existingRecord?.fullName}" ስም ተመዝግቧል!</b>\n\n` +
+          `አንድ አባል በአንድ ስልክ ቁጥር ከአንድ ጊዜ በላይ መመዝገብ አይችልም። ድርብ ምዝገባ አይፈቀድም።\n\n` +
+          `👉 እባክዎ ያልተመዘገበ ሌላ ስልክ ቁጥር በጽሁፍ ያስገቡ ወይም ምዝገባውን ለማቋረጥ /cancel ይበሉ፦`,
+        { parse_mode: 'HTML', ...phoneKeyboard }
+      );
+    }
+
     session.draft.phoneNumber = phone;
     session.step = 'ASK_LIVING_PLACE';
     await saveSession(session);
@@ -832,6 +847,17 @@ bot.on('text', async (ctx) => {
       return ctx.reply('እባክዎ ትክክለኛ ሙሉ ስምዎን (ቢያንስ 2 ቃላት) ያስገቡ፦');
     }
 
+    // Check duplicate full name
+    const dupName = await checkDuplicateFullName(text);
+    if (dupName.isDuplicate) {
+      return ctx.reply(
+        `⚠️ <b>ይቅርታ፣ "${text}" የሚል ሙሉ ስም ቀደም ሲል በስልክ ቁጥር <code>${dupName.existingRecord?.phoneNumber}</code> ተመዝግቧል!</b>\n\n` +
+          `ቀደም ሲል የተመዘገቡ ከሆኑ /status በማለት መረጃዎን መመልከት ይችላሉ።\n\n` +
+          `👉 የተለየ ሰው ከሆኑ እባክዎ የአያትና የቅድመ አያት ስም ጨምሮ የተሟላ ስምዎን ጽፈው ይላኩ፦`,
+        { parse_mode: 'HTML', ...removeKeyboard }
+      );
+    }
+
     session.draft.fullName = text;
     session.step = 'ASK_PHONE';
     await saveSession(session);
@@ -851,6 +877,17 @@ bot.on('text', async (ctx) => {
       return ctx.reply(
         'እባክዎ ትክክለኛ ስልክ ቁጥር ያስገቡ (ለምሳሌ፦ 0911223344 ወይም +251911223344)፦',
         phoneKeyboard
+      );
+    }
+
+    // Check duplicate phone number
+    const dupPhone = await checkDuplicatePhone(cleanPhone);
+    if (dupPhone.isDuplicate) {
+      return ctx.reply(
+        `⚠️ <b>ይቅርታ፣ ይህ ስልክ ቁጥር (${text}) ቀደም ሲል በ "${dupPhone.existingRecord?.fullName}" ስም ተመዝግቧል!</b>\n\n` +
+          `አንድ አባል በአንድ ስልክ ቁጥር ከአንድ ጊዜ በላይ መመዝገብ አይችልም። ድርብ ምዝገባ አይፈቀድም።\n\n` +
+          `👉 እባክዎ ያልተመዘገበ ሌላ ስልክ ቁጥር ያስገቡ ወይም ምዝገባውን ለማቋረጥ /cancel ይበሉ፦`,
+        { parse_mode: 'HTML', ...phoneKeyboard }
       );
     }
 
@@ -904,6 +941,18 @@ bot.on('text', async (ctx) => {
     if (text === '✅ አረጋግጣለሁ፣ ላክ' || text === '✅ አረጋግጣለሁ፣ መዝግበኝ' || text.toLowerCase().includes('አረጋግጣለሁ')) {
       try {
         const draft = session.draft;
+
+        // Final duplicate check before save
+        const dup = await checkDuplicate(draft.fullName || '', draft.phoneNumber || '');
+        if (dup.isDuplicate) {
+          return ctx.reply(
+            `⚠️ <b>ምዝገባውን ማጠናቀቅ አልተቻለም (ድርብ ምዝገባ ተገኝቷል)፦</b>\n\n` +
+              `${dup.message}\n\n` +
+              `👉 እባክዎ መረጃዎን ለማስተካከል "✏️ መረጃዬን ማስተካከል እፈልጋለሁ" የሚለውን ይጫኑ ወይም በ /cancel ያቋርጡ።`,
+            { parse_mode: 'HTML', ...confirmKeyboard }
+          );
+        }
+
         const saved = await saveRegistration({
           fullName: draft.fullName || '',
           phoneNumber: draft.phoneNumber || '',
@@ -997,6 +1046,17 @@ bot.on('text', async (ctx) => {
       return ctx.reply('እባክዎ የሰውየውን/የሴትየዋን ትክክለኛ ሙሉ ስም ያስገቡ፦');
     }
 
+    // Check duplicate full name for friend
+    const dupName = await checkDuplicateFullName(text);
+    if (dupName.isDuplicate) {
+      return ctx.reply(
+        `⚠️ <b>ይቅርታ፣ "${text}" የሚል ሙሉ ስም ቀደም ሲል በስልክ ቁጥር <code>${dupName.existingRecord?.phoneNumber}</code> ተመዝግቧል!</b>\n\n` +
+          `ሰውየው ቀደም ሲል በሲስተሙ ውስጥ የተመዘገቡ ሊሆኑ ይችላሉ።\n\n` +
+          `👉 የተለየ ሰው ከሆኑ እባክዎ የአያትና የቅድመ አያት ስም ጨምሮ የተሟላ ስማቸውን ጽፈው ይላኩ፦`,
+        { parse_mode: 'HTML', ...removeKeyboard }
+      );
+    }
+
     if (!session.friendDraft) session.friendDraft = {};
     session.friendDraft.fullName = text;
     session.step = 'ASK_FRIEND_PHONE';
@@ -1014,6 +1074,17 @@ bot.on('text', async (ctx) => {
     const cleanPhone = text.replace(/[^0-9+]/g, '');
     if (cleanPhone.length < 9) {
       return ctx.reply('እባክዎ ትክክለኛ ስልክ ቁጥር ያስገቡ (ለምሳሌ፦ 0911223344)፦');
+    }
+
+    // Check duplicate phone number for friend
+    const dupPhone = await checkDuplicatePhone(cleanPhone);
+    if (dupPhone.isDuplicate) {
+      return ctx.reply(
+        `⚠️ <b>ይቅርታ፣ ይህ ስልክ ቁጥር (${text}) ቀደም ሲል በ "${dupPhone.existingRecord?.fullName}" ስም ተመዝግቧል!</b>\n\n` +
+          `ይህ ሰው ቀደም ሲል በሲስተሙ ውስጥ ስለተመዘገቡ በድጋሚ መመዝገብ አያስፈልጋቸውም። ድርብ ምዝገባ አይፈቀድም።\n\n` +
+          `👉 እባክዎ ያልተመዘገበ የተለየ ስልክ ቁጥር ያስገቡ ወይም /cancel ብለው ያቋርጡ፦`,
+        { parse_mode: 'HTML', ...removeKeyboard }
+      );
     }
 
     if (!session.friendDraft) session.friendDraft = {};
@@ -1069,6 +1140,18 @@ bot.on('text', async (ctx) => {
     if (text === '✅ አረጋግጣለሁ፣ ላክ' || text === '✅ አረጋግጣለሁ፣ መዝግበው' || text.toLowerCase().includes('አረጋግጣለሁ')) {
       try {
         const friend = session.friendDraft || {};
+
+        // Final duplicate check before save for friend
+        const dup = await checkDuplicate(friend.fullName || '', friend.phoneNumber || '');
+        if (dup.isDuplicate) {
+          return ctx.reply(
+            `⚠️ <b>የጓደኛዎን ምዝገባ ማጠናቀቅ አልተቻለም (ድርብ ምዝገባ ተገኝቷል)፦</b>\n\n` +
+              `${dup.message}\n\n` +
+              `👉 እባክዎ መረጃውን ለማስተካከል "✏️ መረጃውን ማስተካከል እፈልጋለሁ" የሚለውን ይጫኑ ወይም በ /cancel ያቋርጡ።`,
+            { parse_mode: 'HTML', ...friendConfirmKeyboard }
+          );
+        }
+
         const savedFriend = await saveRegistration({
           fullName: friend.fullName || '',
           phoneNumber: friend.phoneNumber || '',
