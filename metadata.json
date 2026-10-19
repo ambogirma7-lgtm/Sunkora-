@@ -1,0 +1,8 @@
+{
+  "name": "Sankora Land Registration Bot & Management Portal",
+  "description": "Telegram Bot and administration system for registering interested residential land members in Sankora Town with Firebase and Google Sheets sync.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

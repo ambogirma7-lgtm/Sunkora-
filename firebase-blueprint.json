@@ -1,0 +1,30 @@
+{
+  "entities": {
+    "Registration": {
+      "title": "Registration",
+      "description": "Registration for Sankora Land",
+      "type": "object",
+      "properties": {
+        "registrationNumber": { "type": "string" },
+        "fullName": { "type": "string" },
+        "phoneNumber": { "type": "string" },
+        "livingPlace": { "type": "string" },
+        "occupation": { "type": "string" },
+        "idType": { "type": "string" },
+        "idNumber": { "type": "string" },
+        "isConfirmed": { "type": "boolean" },
+        "telegramUserId": { "type": "string" },
+        "telegramUsername": { "type": "string" },
+        "registrationDate": { "type": "string", "format": "date-time" },
+        "status": { "type": "string" }
+      },
+      "required": ["registrationNumber", "fullName", "phoneNumber", "telegramUserId"]
+    }
+  },
+  "firestore": {
+    "/registrations/{registrationId}": {
+      "schema": { "$ref": "Registration" },
+      "description": "Collection of member registrations"
+    }
+  }
+}
