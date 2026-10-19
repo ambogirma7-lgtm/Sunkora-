@@ -1,6 +1,8 @@
 'use client';
 
 import React, { useState, useEffect, useCallback } from 'react';
+import { jsPDF } from 'jspdf';
+import 'jspdf-autotable';
 import {
   Users,
   ShieldCheck,
@@ -17,6 +19,7 @@ import {
   Check,
   Clock,
   XCircle,
+  FileText,
 } from 'lucide-react';
 
 interface MemberRecord {
@@ -158,6 +161,17 @@ export default function HomePage() {
     }
   };
 
+  const exportToPDF = () => {
+    const doc = new jsPDF();
+    doc.text('Sankora Land Registration Member List', 14, 15);
+    (doc as any).autoTable({
+      head: [['Full Name', 'Phone', 'Living Place', 'Occupation', 'Status']],
+      body: filteredRecords.map((r) => [r.fullName, r.phoneNumber, r.livingPlace, r.occupation, r.verificationStatus]),
+      startY: 20,
+    });
+    doc.save(`Sankora_Members_${new Date().toISOString().slice(0, 10)}.pdf`);
+  };
+
   const handleReconnectWebhook = async () => {
     setSyncingWebhook(true);
     setWebhookMessage(null);
@@ -256,8 +270,15 @@ export default function HomePage() {
               className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-sm transition shadow-lg shadow-emerald-600/20"
             >
               <Download className="w-4 h-4" />
-              Export to CSV
+              CSV
             </a>
+            <button
+              onClick={exportToPDF}
+              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-medium text-sm transition shadow-lg shadow-rose-600/20"
+            >
+              <FileText className="w-4 h-4" />
+              PDF
+            </button>
           </div>
         </header>
 

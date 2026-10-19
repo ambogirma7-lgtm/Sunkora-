@@ -282,9 +282,47 @@ bot.action(/^cancel_del_(.+)$/, async (ctx) => {
   } catch {}
 });
 
-// ---------------------------------------------
-// BOT COMMANDS
-// ---------------------------------------------
+bot.command('notify', async (ctx) => {
+  if (!ctx.from || !isAdmin(ctx.from.id)) {
+    return ctx.reply('ይህን ትዕዛዝ ለመጠቀም ፈቃድ የለዎትም።');
+  }
+
+  const message = ctx.message.text.replace('/notify', '').trim();
+  if (!message) {
+    return ctx.reply('እባክዎ የሚላከውን መልእክት ከትዕዛዙ ጋር ይጻፉ።\nምሳሌ፦ <code>/notify ሰላም አባላት፣ አዲስ መረጃ አለን!</code>', {
+      parse_mode: 'HTML',
+    });
+  }
+
+  const all = await getAllRegistrations();
+  const verified = all.filter((r) => r.verificationStatus === 'Approved');
+  
+  if (verified.length === 0) {
+    return ctx.reply('ምንም የጸደቀ አባል አልተገኘም።');
+  }
+
+  let successCount = 0;
+  let failCount = 0;
+
+  await ctx.reply(`⏳ ${verified.length} ለሚሆኑ የጸደቁ አባላት መልእክት በመላክ ላይ...`);
+
+  for (const member of verified) {
+    const userId = Number(member.telegramUserId);
+    if (userId) {
+      try {
+        await bot.telegram.sendMessage(userId, `📢 <b>አዲስ ማሳወቂያ ከሳንኮራ አስተዳደር፦</b>\n\n${message}`, {
+          parse_mode: 'HTML',
+        });
+        successCount++;
+      } catch (err) {
+        console.warn(`Failed to notify ${userId}:`, err);
+        failCount++;
+      }
+    }
+  }
+
+  await ctx.reply(`✅ ማሳወቂያው ለ ${successCount} አባላት ተልኳል። (የከሸፈ፦ ${failCount})`);
+});
 
 // /start command
 bot.command('start', async (ctx) => {
@@ -361,6 +399,7 @@ bot.command('help', async (ctx) => {
       `• /delete &lt;ስም/ስልክ&gt; — አባልን ከዳታቤዝ በቋሚነት ለመሰረዝ\n` +
       `• /count — የተመዘገቡ አባላት ጠቅላላ ቁጥርና ማጠቃለያ\n` +
       `• /members — የተመዘገቡ አባላት ዝርዝር\n` +
+      `• /notify &lt;መልእክት&gt; — ለጸደቁ አባላት ማሳወቂያ መላኪያ\n` +
       `• /search &lt;ስም/ስልክ&gt; — አባል መፈለጊያ\n` +
       `• /export — መረጃዎችን በCSV ፋይል ማውረጃ\n`;
   }
