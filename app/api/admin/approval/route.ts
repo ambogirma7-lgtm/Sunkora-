@@ -1,6 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { updateRegistrationStatus, deleteRegistrationById } from '@/lib/registrationService';
-import { bot } from '@/lib/botLogic';
 
 export const dynamic = 'force-dynamic';
 
@@ -11,6 +9,10 @@ export async function POST(req: NextRequest) {
     if (!id || !['Approved', 'Rejected'].includes(status)) {
       return NextResponse.json({ success: false, error: 'Invalid parameters' }, { status: 400 });
     }
+
+    // Use dynamic import inside function to avoid issues if any
+    const { updateRegistrationStatus } = await import('@/lib/registrationService');
+    const { bot } = await import('@/lib/botLogic');
 
     const updated = await updateRegistrationStatus(id, status, adminName || 'Admin');
     if (!updated) {
@@ -54,6 +56,7 @@ export async function DELETE(req: NextRequest) {
       return NextResponse.json({ success: false, error: 'Missing registration ID' }, { status: 400 });
     }
 
+    const { deleteRegistrationById } = await import('@/lib/registrationService');
     const deleted = await deleteRegistrationById(id);
     return NextResponse.json({ success: deleted });
   } catch (error: any) {

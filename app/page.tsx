@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { jsPDF } from 'jspdf';
-import 'jspdf-autotable';
+import autoTable from 'jspdf-autotable';
 import {
   Users,
   ShieldCheck,
@@ -164,9 +164,19 @@ export default function HomePage() {
   const exportToPDF = () => {
     const doc = new jsPDF();
     doc.text('Sankora Land Registration Member List', 14, 15);
-    (doc as any).autoTable({
+    
+    // Normalize Amharic text to ASCII (transliteration or replacement) for PDF compatibility
+    const normalizeText = (text: string) => text.replace(/[^\x00-\x7F]/g, '?');
+
+    autoTable(doc, {
       head: [['Full Name', 'Phone', 'Living Place', 'Occupation', 'Status']],
-      body: filteredRecords.map((r) => [r.fullName, r.phoneNumber, r.livingPlace, r.occupation, r.verificationStatus]),
+      body: filteredRecords.map((r) => [
+        normalizeText(r.fullName), 
+        r.phoneNumber, 
+        normalizeText(r.livingPlace), 
+        normalizeText(r.occupation), 
+        r.verificationStatus
+      ]),
       startY: 20,
     });
     doc.save(`Sankora_Members_${new Date().toISOString().slice(0, 10)}.pdf`);
