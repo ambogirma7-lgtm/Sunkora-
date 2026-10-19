@@ -12,5 +12,9 @@ service cloud.firestore {
     match /bot_sessions/{userId} {
       allow read, write: if true;
     }
+
+    match /notifications/{notificationId} {
+      allow read, write: if true;
+    }
   }
 }

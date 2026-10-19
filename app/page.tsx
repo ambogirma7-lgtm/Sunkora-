@@ -1,8 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { jsPDF } from 'jspdf';
-import autoTable from 'jspdf-autotable';
+import { exportRecordsToPDF } from '@/lib/pdfExport';
 import {
   Users,
   ShieldCheck,
@@ -20,6 +19,14 @@ import {
   Clock,
   XCircle,
   FileText,
+  Bell,
+  Printer,
+  Trash2,
+  X,
+  MessageSquare,
+  AlertTriangle,
+  History,
+  Info,
 } from 'lucide-react';
 
 interface MemberRecord {
@@ -48,6 +55,17 @@ interface WebhookData {
   last_error_date?: number;
 }
 
+interface NotificationLog {
+  id: string;
+  message: string;
+  target: 'APPROVED' | 'ALL';
+  sentCount: number;
+  failedCount: number;
+  totalTargeted: number;
+  sentAt: string;
+  sentBy?: string;
+}
+
 export default function HomePage() {
   const [records, setRecords] = useState<MemberRecord[]>([]);
   const [stats, setStats] = useState({
@@ -66,6 +84,27 @@ export default function HomePage() {
   const [webhookMessage, setWebhookMessage] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [updatingId, setUpdatingId] = useState<string | null>(null);
+
+  // PDF & Print States
+  const [isExportingPDF, setIsExportingPDF] = useState(false);
+  const [showPrintModal, setShowPrintModal] = useState(false);
+
+  // Notification Broadcast States
+  const [showNotifyModal, setShowNotifyModal] = useState(false);
+  const [notifyMessage, setNotifyMessage] = useState('');
+  const [notifyTarget, setNotifyTarget] = useState<'APPROVED' | 'ALL'>('APPROVED');
+  const [sendingNotification, setSendingNotification] = useState(false);
+  const [notificationStatus, setNotificationStatus] = useState<{
+    type: 'success' | 'error';
+    text: string;
+  } | null>(null);
+  const [notificationLogs, setNotificationLogs] = useState<NotificationLog[]>([]);
+  const [loadingLogs, setLoadingLogs] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+
+  // Permanent Delete Modal State (avoids window.confirm in iframe)
+  const [memberToDelete, setMemberToDelete] = useState<MemberRecord | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   // Load records and webhook info safely
   const loadData = useCallback(async () => {
@@ -111,6 +150,23 @@ export default function HomePage() {
     }
   }, []);
 
+  const loadNotificationLogs = useCallback(async () => {
+    setLoadingLogs(true);
+    try {
+      const res = await fetch('/api/admin/notify', { cache: 'no-store' });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success) {
+          setNotificationLogs(data.logs || []);
+        }
+      }
+    } catch (err) {
+      console.warn('Error loading notification logs:', err);
+    } finally {
+      setLoadingLogs(false);
+    }
+  }, []);
+
   useEffect(() => {
     const timer = setTimeout(() => {
       loadData();
@@ -128,7 +184,7 @@ export default function HomePage() {
       const res = await fetch('/api/admin/approval', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id, status: newStatus, adminName: 'Admin Portal' }),
+        body: JSON.stringify({ id, status: newStatus, adminName: 'Natananor' }),
       });
       if (res.ok) {
         await loadData();
@@ -140,46 +196,83 @@ export default function HomePage() {
     }
   };
 
-  const handleDeleteMember = async (id: string, name: string) => {
-    if (!window.confirm(`⚠️ እርግጠኛ ነዎት የ ${name}ን መረጃ ከዳታቤዝ ውስጥ በቋሚነት መሰረዝ ይፈልጋሉ?`)) {
-      return;
-    }
-    setUpdatingId(id);
+  const confirmPermanentDelete = async () => {
+    if (!memberToDelete) return;
+    setDeleting(true);
     try {
       const res = await fetch('/api/admin/approval', {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id }),
+        body: JSON.stringify({ id: memberToDelete.id }),
       });
       if (res.ok) {
+        setMemberToDelete(null);
         await loadData();
       }
     } catch (err) {
       console.error('Error deleting member:', err);
     } finally {
-      setUpdatingId(null);
+      setDeleting(false);
     }
   };
 
-  const exportToPDF = () => {
-    const doc = new jsPDF();
-    doc.text('Sankora Land Registration Member List', 14, 15);
-    
-    // Normalize Amharic text to ASCII (transliteration or replacement) for PDF compatibility
-    const normalizeText = (text: string) => text.replace(/[^\x00-\x7F]/g, '?');
+  // Direct High-Resolution Canvas PDF Export (preserves Ethiopic Unicode 100%)
+  const handleExportPDF = async () => {
+    try {
+      setIsExportingPDF(true);
+      await exportRecordsToPDF(filteredRecords, {
+        filename: `Sankora_Land_Members_${new Date().toISOString().slice(0, 10)}.pdf`,
+      });
+    } catch (err) {
+      console.error('Error generating PDF:', err);
+      // Fallback to printable modal
+      setShowPrintModal(true);
+    } finally {
+      setIsExportingPDF(false);
+    }
+  };
 
-    autoTable(doc, {
-      head: [['Full Name', 'Phone', 'Living Place', 'Occupation', 'Status']],
-      body: filteredRecords.map((r) => [
-        normalizeText(r.fullName), 
-        r.phoneNumber, 
-        normalizeText(r.livingPlace), 
-        normalizeText(r.occupation), 
-        r.verificationStatus
-      ]),
-      startY: 20,
-    });
-    doc.save(`Sankora_Members_${new Date().toISOString().slice(0, 10)}.pdf`);
+  // Send Broadcast Notification to Members
+  const handleSendNotification = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!notifyMessage.trim()) return;
+
+    setSendingNotification(true);
+    setNotificationStatus(null);
+
+    try {
+      const res = await fetch('/api/admin/notify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: notifyMessage.trim(),
+          target: notifyTarget,
+          adminName: 'Natananor',
+        }),
+      });
+
+      const data = await res.json();
+      if (data.success) {
+        setNotificationStatus({
+          type: 'success',
+          text: `✅ ማሳወቂያው ለ ${data.sentCount} አባላት በተሳካ ሁኔታ ተልኳል! (የከሸፈ፦ ${data.failedCount || 0})`,
+        });
+        setNotifyMessage('');
+        loadNotificationLogs();
+      } else {
+        setNotificationStatus({
+          type: 'error',
+          text: `❌ መልእክቱን መላክ አልተቻለም፦ ${data.error || 'ያልታወቀ ስህተት'}`,
+        });
+      }
+    } catch (err: any) {
+      setNotificationStatus({
+        type: 'error',
+        text: `❌ ስህተት ተከስቷል፦ ${err?.message || 'ኔትወርክ አላገናኝም'}`,
+      });
+    } finally {
+      setSendingNotification(false);
+    }
   };
 
   const handleReconnectWebhook = async () => {
@@ -239,6 +332,22 @@ export default function HomePage() {
     setTimeout(() => setCopied(false), 2500);
   };
 
+  // Notification presets in respectful Amharic
+  const notificationPresets = [
+    {
+      title: '📢 ጠቅላላ ስብሰባ ጥሪ',
+      text: 'ሰላም የተከበራችሁ የሳንኮራ የመኖሪያ ቤት መሬት ፈላጊዎች አባላት፣ በመጪው እሁድ ጠቃሚ የጋራ ስብሰባ ስለተዘጋጀ በሰዓቱ እንድትገኙ በአክብሮት እናሳስባለን።',
+    },
+    {
+      title: '📄 ሰነድ / ማስረጃ ማቅረቢያ',
+      text: 'ሰላም የተከበራችሁ አባላት፣ የምዝገባ ሂደቱን ለማጠናቀቅ የሚያስፈልጉ ተጨማሪ መረጃዎችን ወይም ሰነዶችን እንድታዘጋጁ በትህትና እናሳውቃለን።',
+    },
+    {
+      title: '⚖️ የሂደት እና የቦታ መረጃ',
+      text: 'ሰላም የተከበራችሁ አባላት፣ የመኖሪያ መሬት አሰጣጥ ቅደም ተከተልና የጣቢያ መረጃ ዝግጅት በጥሩ ሁኔታ እየተከናወነ ይገኛል። ዝርዝሩን በቅርቡ እናሳውቃለን።',
+    },
+  ];
+
   return (
     <div className="min-h-screen bg-gradient-to-b from-slate-950 via-slate-900 to-slate-950 text-slate-100 p-4 md:p-8">
       <div className="max-w-7xl mx-auto space-y-8">
@@ -248,10 +357,13 @@ export default function HomePage() {
             <div className="flex items-center gap-2 mb-2">
               <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 flex items-center gap-1.5">
                 <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                Live Bot &amp; Admin Approval Active
+                Live Bot &amp; Admin Active
               </span>
               <span className="px-2.5 py-1 rounded-full text-xs font-medium bg-blue-500/10 text-blue-400 border border-blue-500/30">
                 Sankora Town
+              </span>
+              <span className="px-2.5 py-1 rounded-full text-xs font-medium bg-purple-500/10 text-purple-400 border border-purple-500/30">
+                Ethiopic Unicode UTF-8
               </span>
             </div>
             <h1 className="text-2xl md:text-3xl font-bold tracking-tight text-white">
@@ -262,7 +374,20 @@ export default function HomePage() {
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2.5">
+            {/* Send Notification Button */}
+            <button
+              onClick={() => {
+                setShowNotifyModal(true);
+                loadNotificationLogs();
+              }}
+              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-medium text-sm transition shadow-lg shadow-amber-600/20"
+            >
+              <Bell className="w-4 h-4" />
+              ማሳወቂያ ላክ (Send Notification)
+            </button>
+
+            {/* Telegram Bot Direct Link */}
             <a
               href="https://t.me/Sankora_RL_Membersbot"
               target="_blank"
@@ -270,24 +395,43 @@ export default function HomePage() {
               className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white font-medium text-sm transition shadow-lg shadow-sky-600/20"
             >
               <Send className="w-4 h-4" />
-              Open Telegram Bot (@Sankora_RL_Membersbot)
+              @Sankora_RL_Membersbot
               <ExternalLink className="w-3.5 h-3.5 opacity-70" />
             </a>
 
+            {/* CSV Export */}
             <a
               href="/api/admin/export"
               download
-              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-sm transition shadow-lg shadow-emerald-600/20"
+              className="inline-flex items-center gap-2 px-3.5 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-sm transition shadow-lg shadow-emerald-600/20"
+              title="Download UTF-8 CSV with Amharic Unicode Support"
             >
               <Download className="w-4 h-4" />
               CSV
             </a>
+
+            {/* PDF Direct Export */}
             <button
-              onClick={exportToPDF}
-              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-medium text-sm transition shadow-lg shadow-rose-600/20"
+              onClick={handleExportPDF}
+              disabled={isExportingPDF}
+              className="inline-flex items-center gap-2 px-3.5 py-2.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-medium text-sm transition shadow-lg shadow-rose-600/20 disabled:opacity-50"
+              title="Download Pure Amharic PDF"
             >
-              <FileText className="w-4 h-4" />
-              PDF
+              {isExportingPDF ? (
+                <RefreshCw className="w-4 h-4 animate-spin" />
+              ) : (
+                <FileText className="w-4 h-4" />
+              )}
+              {isExportingPDF ? 'በማዘጋጀት ላይ...' : 'PDF'}
+            </button>
+
+            {/* Official Print View */}
+            <button
+              onClick={() => setShowPrintModal(true)}
+              className="inline-flex items-center gap-2 px-3 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-medium text-sm transition"
+              title="Printable Report View"
+            >
+              <Printer className="w-4 h-4" />
             </button>
           </div>
         </header>
@@ -300,13 +444,13 @@ export default function HomePage() {
               <div>
                 <div className="flex items-center gap-2">
                   <Terminal className="w-4 h-4 text-emerald-400" />
-                  <h3 className="font-semibold text-slate-200 text-sm">Telegram Bot &amp; Admin Approval Status</h3>
+                  <h3 className="font-semibold text-slate-200 text-sm">Telegram Bot &amp; Admin Broadcast Status</h3>
                   <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
                     Live Polling Active
                   </span>
                 </div>
                 <p className="text-xs text-slate-400 mt-1 font-mono">
-                  When members register, instant alert with Approve/Reject buttons is sent to @Natananor.
+                  When members register, instant alert with Approve/Reject/Delete is sent to @Natananor.
                 </p>
               </div>
 
@@ -351,9 +495,12 @@ export default function HomePage() {
               <p className="text-xs text-slate-400 mt-0.5">Username: @Natananor</p>
             </div>
 
-            <div className="mt-4 pt-3 border-t border-slate-800/80 text-xs text-slate-400 flex items-center gap-1.5">
-              <Database className="w-3.5 h-3.5 text-blue-400" />
-              <span>Firebase Firestore: Active</span>
+            <div className="mt-4 pt-3 border-t border-slate-800/80 text-xs text-slate-400 flex items-center justify-between">
+              <div className="flex items-center gap-1.5">
+                <Database className="w-3.5 h-3.5 text-blue-400" />
+                <span>Firestore: Protected</span>
+              </div>
+              <span className="text-[11px] text-emerald-400 font-medium">Admin Delete Active</span>
             </div>
           </div>
         </div>
@@ -550,11 +697,12 @@ export default function HomePage() {
                             </button>
                           )}
                           <button
-                            onClick={() => handleDeleteMember(r.id, r.fullName)}
+                            onClick={() => setMemberToDelete(r)}
                             disabled={updatingId === r.id}
-                            className="px-2 py-1 rounded bg-rose-600/80 hover:bg-rose-600 text-white text-[11px] font-medium transition disabled:opacity-50"
-                            title="Delete permanently from secure database"
+                            className="px-2 py-1 rounded bg-rose-600/80 hover:bg-rose-600 text-white text-[11px] font-medium transition disabled:opacity-50 flex items-center gap-1"
+                            title="Delete permanently from database"
                           >
+                            <Trash2 className="w-3 h-3" />
                             ሰርዝ
                           </button>
                         </div>
@@ -589,7 +737,10 @@ export default function HomePage() {
                 <span className="font-mono text-amber-400 font-bold">/pending</span> — ለአስተዳዳሪ ብቻ፦ ማረጋገጫ የሚጠብቁትን ለማየትና ለማጽደቅ
               </div>
               <div className="p-2.5 rounded bg-slate-950/60 border border-slate-800/80">
-                <span className="font-mono text-amber-400 font-bold">/admin</span> — ለአስተዳዳሪ ብቻ (Admin Menu: @Natananor)
+                <span className="font-mono text-amber-400 font-bold">/notify &lt;መልእክት&gt;</span> — በቴሌግራም ለጸደቁ አባላት ማሳወቂያ መላኪያ
+              </div>
+              <div className="p-2.5 rounded bg-slate-950/60 border border-slate-800/80">
+                <span className="font-mono text-amber-400 font-bold">/delete &lt;ስም/ስልክ&gt;</span> — አባልን ከዳታቤዝ በቋሚነት ለመሰረዝ
               </div>
               <div className="p-2.5 rounded bg-slate-950/60 border border-slate-800/80">
                 <span className="font-mono text-amber-400 font-bold">/count</span> — የተመዘገቡ አባላት ጠቅላላ ቁጥርና ስታትስቲክስ
@@ -614,14 +765,14 @@ export default function HomePage() {
 
             <div className="text-xs text-slate-400 bg-slate-950/80 p-3.5 rounded-lg border border-slate-800 font-mono space-y-1">
               <p className="text-slate-300 font-bold text-[11px] uppercase tracking-wider mb-2">
-                Spreadsheet Columns:
+                Spreadsheet Columns (UTF-8 Unicode):
               </p>
               <p>1. Full Name (ሙሉ ስም)</p>
               <p>2. Phone Number (ስልክ ቁጥር)</p>
               <p>3. Current Living Place (የመኖሪያ ቦታ)</p>
               <p>4. Occupation (የስራ ዘርፍ / ሙያ)</p>
               <p>5. Interest Confirmation</p>
-              <p>6. Registration Type (Direct vs On Behalf of Friend)</p>
+              <p>6. Registration Type (Direct vs Proxy)</p>
               <p>7. Registered By (የመዘገበው ሰው)</p>
               <p>8. Telegram Username</p>
               <p>9. Registration Date</p>
@@ -630,6 +781,390 @@ export default function HomePage() {
           </div>
         </div>
       </div>
+
+      {/* ============================================================== */}
+      {/* ADMIN NOTIFICATION BROADCAST MODAL */}
+      {/* ============================================================== */}
+      {showNotifyModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto shadow-2xl p-6 space-y-5 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-4">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400">
+                  <Bell className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-lg text-white">የአስተዳዳሪ ማሳወቂያ መላኪያ (Send Notification)</h3>
+                  <p className="text-xs text-slate-400">
+                    Send real-time updates directly to members via the Telegram bot
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  setShowNotifyModal(false);
+                  setNotificationStatus(null);
+                }}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Notification Form */}
+            <form onSubmit={handleSendNotification} className="space-y-4">
+              {/* Target Audience */}
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-2">
+                  የተቀባዮች ቡድን (Target Audience)
+                </label>
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setNotifyTarget('APPROVED')}
+                    className={`p-3 rounded-xl border text-left transition flex items-center gap-3 ${
+                      notifyTarget === 'APPROVED'
+                        ? 'border-emerald-500/60 bg-emerald-500/10 text-white'
+                        : 'border-slate-800 bg-slate-950/40 text-slate-400 hover:bg-slate-800/40'
+                    }`}
+                  >
+                    <CheckCircle2
+                      className={`w-5 h-5 ${
+                        notifyTarget === 'APPROVED' ? 'text-emerald-400' : 'text-slate-600'
+                      }`}
+                    />
+                    <div>
+                      <p className="text-xs font-bold">የጸደቁ አባላት ብቻ (Approved)</p>
+                      <p className="text-[11px] text-slate-400">{stats.approved} አባላት ተመርጠዋል</p>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setNotifyTarget('ALL')}
+                    className={`p-3 rounded-xl border text-left transition flex items-center gap-3 ${
+                      notifyTarget === 'ALL'
+                        ? 'border-sky-500/60 bg-sky-500/10 text-white'
+                        : 'border-slate-800 bg-slate-950/40 text-slate-400 hover:bg-slate-800/40'
+                    }`}
+                  >
+                    <Users
+                      className={`w-5 h-5 ${
+                        notifyTarget === 'ALL' ? 'text-sky-400' : 'text-slate-600'
+                      }`}
+                    />
+                    <div>
+                      <p className="text-xs font-bold">ሁሉም የተመዘገቡ አባላት (All)</p>
+                      <p className="text-[11px] text-slate-400">{stats.total} አባላት ተመርጠዋል</p>
+                    </div>
+                  </button>
+                </div>
+              </div>
+
+              {/* Quick Preset Templates */}
+              <div>
+                <label className="block text-xs font-semibold text-slate-400 mb-1.5">
+                  ፈጣን ቅጾች (Quick Message Templates)
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  {notificationPresets.map((preset, idx) => (
+                    <button
+                      key={idx}
+                      type="button"
+                      onClick={() => setNotifyMessage(preset.text)}
+                      className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-slate-300 border border-slate-700 transition"
+                    >
+                      {preset.title}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Message Input */}
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-semibold text-slate-300 uppercase tracking-wider">
+                    የመልእክቱ ይዘት (Amharic Message Content)
+                  </label>
+                  <span className="text-[11px] text-slate-500">{notifyMessage.length} ፊደላት</span>
+                </div>
+                <textarea
+                  rows={4}
+                  required
+                  value={notifyMessage}
+                  onChange={(e) => setNotifyMessage(e.target.value)}
+                  placeholder="ለአባላት የሚላከውን መልእክት በአማርኛ እዚህ ይጻፉ... (ምሳሌ፦ በመጪው እሁድ ጠቃሚ ስብሰባ አለ...)"
+                  className="w-full bg-slate-950/80 border border-slate-700 rounded-xl p-3.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-amber-500 leading-relaxed font-sans"
+                />
+              </div>
+
+              {/* Telegram Preview */}
+              {notifyMessage.trim() && (
+                <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 space-y-1.5">
+                  <p className="text-[11px] font-semibold text-slate-400 flex items-center gap-1.5">
+                    <MessageSquare className="w-3.5 h-3.5 text-sky-400" />
+                    በቴሌግራም የሚታይበት ቅርጽ (Telegram Preview)
+                  </p>
+                  <div className="bg-sky-950/30 border border-sky-800/40 rounded-lg p-3 text-xs text-sky-100 font-sans leading-relaxed whitespace-pre-wrap">
+                    <p className="font-bold text-sky-300 mb-1">
+                      📢 አዲስ ማሳወቂያ ከሳንኮራ የመኖሪያ ቤት መሬት ምዝገባ አስተዳደር፦
+                    </p>
+                    <p>{notifyMessage}</p>
+                    <p className="text-[11px] text-sky-400/70 mt-2 italic">
+                      📅 {new Date().toLocaleDateString('am-ET')} • አስተዳዳሪ @Natananor
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* Status Message */}
+              {notificationStatus && (
+                <div
+                  className={`p-3 rounded-xl text-xs flex items-center gap-2 ${
+                    notificationStatus.type === 'success'
+                      ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-300'
+                      : 'bg-rose-500/10 border border-rose-500/30 text-rose-300'
+                  }`}
+                >
+                  {notificationStatus.type === 'success' ? (
+                    <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" />
+                  ) : (
+                    <AlertTriangle className="w-4 h-4 shrink-0 text-rose-400" />
+                  )}
+                  <span>{notificationStatus.text}</span>
+                </div>
+              )}
+
+              {/* Buttons */}
+              <div className="flex items-center justify-between pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowHistory(!showHistory)}
+                  className="text-xs text-slate-400 hover:text-slate-200 flex items-center gap-1.5"
+                >
+                  <History className="w-3.5 h-3.5" />
+                  {showHistory ? 'ታሪክን ደብቅ (Hide History)' : 'ያለፉ ማሳወቂያዎች (Past Notifications)'}
+                </button>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowNotifyModal(false);
+                      setNotificationStatus(null);
+                    }}
+                    className="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-slate-300 transition"
+                  >
+                    ተመለስ
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={sendingNotification || !notifyMessage.trim()}
+                    className="px-5 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-medium text-xs flex items-center gap-2 transition disabled:opacity-50 shadow-lg shadow-amber-600/20"
+                  >
+                    {sendingNotification ? (
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Send className="w-3.5 h-3.5" />
+                    )}
+                    {sendingNotification ? 'በመላክ ላይ...' : 'ማሳወቂያውን ላክ (Broadcast)'}
+                  </button>
+                </div>
+              </div>
+            </form>
+
+            {/* History Section */}
+            {showHistory && (
+              <div className="border-t border-slate-800 pt-4 space-y-3">
+                <h4 className="text-xs font-bold text-slate-300 flex items-center gap-1.5">
+                  <History className="w-3.5 h-3.5 text-amber-400" />
+                  የተላኩ ማሳወቂያዎች ታሪክ (Sent Notifications Log)
+                </h4>
+                {loadingLogs ? (
+                  <p className="text-xs text-slate-500">በማምጣት ላይ...</p>
+                ) : notificationLogs.length === 0 ? (
+                  <p className="text-xs text-slate-500">እስካሁን የተላከ ማሳወቂያ የለም።</p>
+                ) : (
+                  <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+                    {notificationLogs.map((log) => (
+                      <div
+                        key={log.id}
+                        className="p-3 rounded-lg bg-slate-950/60 border border-slate-800/80 text-xs space-y-1"
+                      >
+                        <div className="flex items-center justify-between text-[11px] text-slate-400">
+                          <span className="font-semibold text-amber-300">
+                            ዒላማ፦ {log.target === 'APPROVED' ? 'የጸደቁ አባላት' : 'ሁሉም አባላት'}
+                          </span>
+                          <span>{new Date(log.sentAt).toLocaleString('am-ET')}</span>
+                        </div>
+                        <p className="text-slate-200 line-clamp-2">{log.message}</p>
+                        <div className="text-[10px] text-emerald-400 flex items-center gap-2 pt-1 border-t border-slate-800/60">
+                          <span>✅ የተላከላቸው፦ {log.sentCount}</span>
+                          {log.failedCount > 0 && <span className="text-rose-400">❌ የከሸፈ፦ {log.failedCount}</span>}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ============================================================== */}
+      {/* PERMANENT DELETE CONFIRMATION MODAL */}
+      {/* ============================================================== */}
+      {memberToDelete && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-rose-900/40 rounded-2xl w-full max-w-md shadow-2xl p-6 space-y-5 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-400 shrink-0">
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="font-bold text-base text-white">አባልን ከዳታቤዝ በቋሚነት መሰረዝ</h3>
+                <p className="text-xs text-rose-300 mt-0.5">Permanent Member Deletion (Cannot be undone)</p>
+              </div>
+            </div>
+
+            <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-2 text-xs">
+              <div className="flex justify-between">
+                <span className="text-slate-400">ሙሉ ስም፦</span>
+                <span className="font-bold text-white">{memberToDelete.fullName}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">ስልክ ቁጥር፦</span>
+                <span className="font-mono text-slate-200">{memberToDelete.phoneNumber}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">የመኖሪያ ቦታ፦</span>
+                <span className="text-slate-200">{memberToDelete.livingPlace}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">ሁኔታ፦</span>
+                <span className="font-medium text-amber-400">{memberToDelete.verificationStatus}</span>
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-300 leading-relaxed">
+              ⚠️ ይህን አባል ከደህንነት ዳታቤዝ ውስጥ <b>በቋሚነት</b> ለመሰረዝ እርግጠኛ ነዎት? የተሰረዘው መረጃ መልሶ ሊገኝ አይችልም።
+            </p>
+
+            <div className="flex items-center justify-end gap-2.5 pt-2">
+              <button
+                type="button"
+                onClick={() => setMemberToDelete(null)}
+                disabled={deleting}
+                className="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-slate-300 transition"
+              >
+                ተመለስ (Cancel)
+              </button>
+              <button
+                type="button"
+                onClick={confirmPermanentDelete}
+                disabled={deleting}
+                className="px-5 py-2 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-medium text-xs flex items-center gap-1.5 transition disabled:opacity-50 shadow-lg shadow-rose-600/20"
+              >
+                {deleting ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                {deleting ? 'በመሰረዝ ላይ...' : 'አዎ፣ በቋሚነት ሰርዝ (Delete)'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ============================================================== */}
+      {/* OFFICIAL PRINTABLE REPORT MODAL */}
+      {/* ============================================================== */}
+      {showPrintModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-4xl max-h-[92vh] overflow-y-auto shadow-2xl p-6 space-y-6">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-4">
+              <div className="flex items-center gap-2">
+                <Printer className="w-5 h-5 text-emerald-400" />
+                <h3 className="font-bold text-lg text-white">ይፋዊ የአባላት ዝርዝር ሪፖርት (Official Print View)</h3>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => window.print()}
+                  className="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-xs flex items-center gap-1.5 transition"
+                >
+                  <Printer className="w-3.5 h-3.5" />
+                  አትም / በPDF አስቀምጥ (Print / PDF)
+                </button>
+                <button
+                  onClick={() => setShowPrintModal(false)}
+                  className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+
+            {/* Printable Paper Canvas Sheet */}
+            <div className="bg-white text-slate-900 p-8 rounded-xl shadow-lg font-sans space-y-6">
+              {/* Report Header */}
+              <div className="border-b-2 border-slate-800 pb-4 flex items-center justify-between">
+                <div>
+                  <h2 className="text-xl font-bold tracking-tight text-slate-950">
+                    የሳንኮራ ከተማ የመኖሪያ ቤት መሬት ምዝገባ
+                  </h2>
+                  <p className="text-xs text-slate-600 mt-0.5">
+                    Sankora Town Residential Land Registration • የተመዘገቡ አባላት ይፋዊ ሪፖርት
+                  </p>
+                </div>
+                <div className="text-right text-xs text-slate-600">
+                  <p className="font-bold text-slate-900">ቀን፦ {new Date().toLocaleDateString('am-ET')}</p>
+                  <p>ጠቅላላ አባላት፦ {filteredRecords.length}</p>
+                </div>
+              </div>
+
+              {/* Table */}
+              <table className="w-full text-left text-xs border border-slate-300 divide-y divide-slate-300">
+                <thead className="bg-slate-100 font-bold text-slate-800">
+                  <tr>
+                    <th className="p-2 border-r border-slate-300">#</th>
+                    <th className="p-2 border-r border-slate-300">ሙሉ ስም</th>
+                    <th className="p-2 border-r border-slate-300">ስልክ ቁጥር</th>
+                    <th className="p-2 border-r border-slate-300">የመኖሪያ ቦታ</th>
+                    <th className="p-2 border-r border-slate-300">ሙያ / የስራ ዘርፍ</th>
+                    <th className="p-2 border-r border-slate-300">ዓይነት</th>
+                    <th className="p-2">ሁኔታ</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200">
+                  {filteredRecords.map((r, i) => (
+                    <tr key={r.id} className={i % 2 === 0 ? 'bg-white' : 'bg-slate-50'}>
+                      <td className="p-2 border-r border-slate-200 font-mono">{i + 1}</td>
+                      <td className="p-2 border-r border-slate-200 font-semibold">{r.fullName}</td>
+                      <td className="p-2 border-r border-slate-200 font-mono">{r.phoneNumber}</td>
+                      <td className="p-2 border-r border-slate-200">{r.livingPlace}</td>
+                      <td className="p-2 border-r border-slate-200">{r.occupation}</td>
+                      <td className="p-2 border-r border-slate-200">
+                        {r.isProxyRegistration ? 'በጓደኛ' : 'በራሱ'}
+                      </td>
+                      <td className="p-2 font-medium">
+                        {r.verificationStatus === 'Approved'
+                          ? '✅ የጸደቀ'
+                          : r.verificationStatus === 'Rejected'
+                          ? '❌ ውድቅ'
+                          : '⏳ በመጠባበቅ'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+
+              {/* Footer */}
+              <div className="pt-4 border-t border-slate-200 flex justify-between text-[11px] text-slate-500">
+                <span>ይህ ሰነድ ከሳንኮራ የመኖሪያ ቤት መሬት ምዝገባ አስተዳደር የተወሰደ ይፋዊ ሪፖርት ነው።</span>
+                <span>ገጽ 1 / 1</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

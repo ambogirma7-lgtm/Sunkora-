@@ -1,1 +1,17 @@
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+Ethiopic:wght@300;400;500;600;700&display=swap');
 @import "tailwindcss";
+
+@theme {
+  --font-sans: 'Noto Sans Ethiopic', 'Segoe UI', system-ui, -apple-system, sans-serif;
+}
+
+*,
+*::before,
+*::after,
+body,
+input,
+textarea,
+select,
+button {
+  font-family: 'Noto Sans Ethiopic', 'Segoe UI', system-ui, -apple-system, sans-serif !important;
+}

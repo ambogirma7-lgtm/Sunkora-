@@ -285,6 +285,48 @@ export async function searchRegistrations(queryText: string): Promise<Registrati
   );
 }
 
+export interface NotificationLog {
+  id: string;
+  message: string;
+  target: 'APPROVED' | 'ALL';
+  sentCount: number;
+  failedCount: number;
+  totalTargeted: number;
+  sentAt: string;
+  sentBy?: string;
+}
+
+export async function saveNotificationLog(log: Omit<NotificationLog, 'id' | 'sentAt'>): Promise<NotificationLog> {
+  const docId = `notif_${Date.now()}`;
+  const now = new Date().toISOString();
+  const entry: NotificationLog = {
+    id: docId,
+    ...log,
+    sentAt: now,
+  };
+
+  try {
+    await setDoc(doc(db, 'notifications', docId), entry);
+  } catch (err) {
+    console.warn('Could not save notification log:', err);
+  }
+  return entry;
+}
+
+export async function getNotificationLogs(): Promise<NotificationLog[]> {
+  try {
+    const snap = await getDocs(collection(db, 'notifications'));
+    const list: NotificationLog[] = [];
+    snap.forEach((d) => {
+      list.push({ id: d.id, ...(d.data() as any) });
+    });
+    return list.sort((a, b) => (b.sentAt || '').localeCompare(a.sentAt || ''));
+  } catch (err) {
+    console.warn('Could not fetch notification logs:', err);
+    return [];
+  }
+}
+
 export function generateCSV(records: RegistrationRecord[]): string {
   const headers = [
     'Full Name',
@@ -312,5 +354,7 @@ export function generateCSV(records: RegistrationRecord[]): string {
     `"${r.verificationStatus || 'Pending Approval'}"`,
   ]);
 
-  return [headers.join(','), ...rows.map((row) => row.join(','))].join('\n');
+  // Prepend UTF-8 BOM so Excel & Sheets open Amharic without "?????"
+  return '\uFEFF' + [headers.join(','), ...rows.map((row) => row.join(','))].join('\n');
 }
+
