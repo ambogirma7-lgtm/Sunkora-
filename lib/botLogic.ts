@@ -1,4 +1,6 @@
 import { Telegraf, Markup } from 'telegraf';
+import path from 'path';
+import fs from 'fs';
 import {
   getSession,
   saveSession,
@@ -14,6 +16,10 @@ import {
   checkDuplicatePhone,
   checkDuplicateFullName,
   checkDuplicate,
+  isRegistrationOpen,
+  setRegistrationOpen,
+  getFriendsRegisteredByUser,
+  getApprovedRegistrations,
   RegistrationRecord,
 } from './registrationService';
 
@@ -93,10 +99,40 @@ const askFriendKeyboard = Markup.keyboard([
   ['✅ የለም፣ ምዝገባውን ጨርሻለሁ'],
 ]).resize().oneTime();
 
+export const REGISTRATION_FINISHED_MSG =
+  `🔔 <b>የምዝገባ ጊዜው ተጠናቋል! (Registration Closed)</b>\n\n` +
+  `ምዝገባው ተጠናቋል። ከእኛ ጋር ለመሆን ላሳዩት ፍላጎት ከልብ እናመሰግናለን! 🙏\n\n` +
+  `<b>Registration is finished thank for your interest to be with us.</b>\n\n` +
+  `📜 የጸደቁ አባላት ዝርዝርን ለመመልከት /selected ወይም ከታች ያለውን ቁልፍ ይጠቀሙ።`;
+
+export function getNotificationImageBuffer(): Buffer | null {
+  try {
+    const candidates = [
+      path.join(process.cwd(), 'public', 'official_selected_report.png'),
+      path.join(process.cwd(), 'public', 'registration_closed_notification.png'),
+      path.join(
+        process.cwd(),
+        '.aistudio',
+        'artifacts',
+        'brain',
+        '8bed1efe-ffed-4239-aaed-a1b34d574dd0',
+        '.tempmediaStorage',
+        'media_1792495461562_997a82f8.png'
+      ),
+    ];
+    for (const p of candidates) {
+      if (fs.existsSync(p)) return fs.readFileSync(p);
+    }
+  } catch (err) {
+    console.warn('Could not read notification image:', err);
+  }
+  return null;
+}
+
 // Registered user keyboard: DOES NOT ALLOW DELETING (Keeps data safely in secure database)
 const registeredUserKeyboard = Markup.keyboard([
-  ['📋 የምዝገባ መረጃዬን አሳይ'],
-  ['➕ ሌላ ፍላጎት ያለው ሰው መመዝገብ (ቴሌግራም የሌለው)'],
+  ['📋 የምዝገባ ሁኔታዬንና ጓደኞቼን አሳይ'],
+  ['📜 የጸደቁ አባላት ዝርዝር (Selected List)'],
   ['✏️ መረጃዬን ማስተካከል'],
 ]).resize();
 
@@ -114,13 +150,124 @@ function formatRecordSummary(record: Partial<RegistrationRecord>, isFriend = fal
   return (
     `📋 <b>${isFriend ? 'የጓደኛዎ/የዘመድዎ የምዝገባ መረጃ ማጠቃለያ' : 'የምዝገባ መረጃ ማጠቃለያ'}</b>\n\n` +
     `👤 <b>ሙሉ ስም፦</b> ${record.fullName || 'አልተሞላም'}\n` +
-    `📱 <b>ስልክ ቁጥር፦</b> ${record.phoneNumber || 'አልተሞላም'}\n` +
+    `📱 <b>ስልክ ቁጥር፦</b> <code>${record.phoneNumber || 'አልተሞላም'}</code>\n` +
     `📍 <b>የመኖሪያ ቦታ፦</b> ${record.livingPlace || 'አልተሞላም'}\n` +
     `💼 <b>የስራ ዘርፍ / ሙያ፦</b> ${record.occupation || 'አልተሞላም'}\n` +
     (isFriend && record.registeredByName ? `🤝 <b>የመዘገበው ሰው፦</b> ${record.registeredByName}\n` : '') +
     `🛡️ <b>የማረጋገጫ ሁኔታ፦</b> <b>${statusLabel}</b>\n`
   );
 }
+
+// Helper to send member status report with official image and friend statuses
+async function sendMemberStatusReport(ctx: any, record: RegistrationRecord) {
+  const userId = record.telegramUserId;
+  const friends = await getFriendsRegisteredByUser(userId);
+
+  // Send official notification image first
+  const imgBuf = getNotificationImageBuffer();
+  if (imgBuf) {
+    try {
+      await ctx.replyWithPhoto(
+        { source: imgBuf },
+        {
+          caption: `📸 <b>የሳንኮራ ከተማ የመኖሪያ ቤት መሬት ይፋዊ ሪፖርትና ማስታወቂያ</b>\n\n⏰ <b>የምዝገባ ጊዜው ተጠናቋል (Registration is finished)</b>\nየተመዘገቡ አባላት ዝርዝርና ይፋዊ ውጤት ከላይ በምስሉና ከታች በዝርዝር ቀርቧል።`,
+          parse_mode: 'HTML',
+        }
+      );
+    } catch (imgErr) {
+      console.warn('Could not reply with status photo:', imgErr);
+    }
+  }
+
+  const userStatusBadge =
+    record.verificationStatus === 'Approved'
+      ? '✅ የጸደቀ (Approved)'
+      : record.verificationStatus === 'Rejected'
+      ? '❌ ውድቅ የተደረገ (Rejected)'
+      : '⏳ በአስተዳዳሪው ማረጋገጫ በመጠባበቅ ላይ (Pending Approval)';
+
+  let report =
+    `🔔 <b>የአባላት የምዝገባና የማረጋገጫ ሁኔታ (Status Report)</b>\n\n` +
+    `👤 <b>የእርስዎ የምዝገባ መረጃ፦</b>\n` +
+    `• ሙሉ ስም፦ <b>${record.fullName}</b>\n` +
+    `• ስልክ ቁጥር፦ <code>${record.phoneNumber}</code>\n` +
+    `• የመኖሪያ ቦታ፦ ${record.livingPlace}\n` +
+    `• የስራ ዘርፍ፦ ${record.occupation}\n` +
+    `• የማረጋገጫ ሁኔታ፦ <b>${userStatusBadge}</b>\n\n`;
+
+  if (friends.length > 0) {
+    report += `👥 <b>በእርስዎ የተመዘገቡ ጓደኞች / ቤተሰቦች ሁኔታ (${friends.length})፦</b>\n\n`;
+    friends.forEach((f, idx) => {
+      const fStatusBadge =
+        f.verificationStatus === 'Approved'
+          ? '✅ ጸድቋል (Approved)'
+          : f.verificationStatus === 'Rejected'
+          ? '❌ ውድቅ ተደርጓል (Rejected)'
+          : '⏳ ማረጋገጫ በመጠባበቅ ላይ (Pending Approval)';
+      report +=
+        `<b>${idx + 1}. ${f.fullName}</b>\n` +
+        `   📱 ስልክ፦ <code>${f.phoneNumber}</code> | 📍 ቦታ፦ ${f.livingPlace}\n` +
+        `   💼 ስራ፦ ${f.occupation}\n` +
+        `   🛡️ ሁኔታ፦ <b>${fStatusBadge}</b>\n\n`;
+    });
+  } else {
+    report += `👥 <b>በእርስዎ የተመዘገበ ጓደኛ የለም።</b>\n\n`;
+  }
+
+  report += `👉 የጸደቁ አባላትን ሙሉ ዝርዝር ለመመልከት ከታች ያለውን <b>"📜 የጸደቁ አባላት ዝርዝር (Selected List)"</b> የሚለውን ቁልፍ ይጫኑ።`;
+
+  await ctx.reply(report, {
+    parse_mode: 'HTML',
+    ...registeredUserKeyboard,
+  });
+}
+
+// Helper to send the selected / approved list to bot user
+async function sendSelectedMembersList(ctx: any) {
+  const approved = await getApprovedRegistrations();
+
+  // Send official report image
+  const imgBuf = getNotificationImageBuffer();
+  if (imgBuf) {
+    try {
+      await ctx.replyWithPhoto(
+        { source: imgBuf },
+        {
+          caption: `🏆 <b>የሳንኮራ የመኖሪያ ቤት መሬት የጸደቁ አባላት ይፋዊ ሪፖርት (Official Selected Report)</b>\n\nጠቅላላ የተመረጡና የጸደቁ አባላት ቁጥር፦ <b>${approved.length}</b>`,
+          parse_mode: 'HTML',
+        }
+      );
+    } catch (e) {
+      console.warn('Could not send photo for selected list:', e);
+    }
+  }
+
+  if (approved.length === 0) {
+    return ctx.reply('እስካሁን የጸደቀ አባል የለም። በአስተዳዳሪው ማረጋገጫዎች በመሰጠት ላይ ናቸው።', registeredUserKeyboard);
+  }
+
+  let text = `🏆 <b>የተመረጡና የጸደቁ አባላት ይፋዊ ዝርዝር (Selected Members List - ${approved.length})፦</b>\n\n`;
+
+  for (let i = 0; i < approved.length; i++) {
+    const m = approved[i];
+    const item =
+      `<b>${i + 1}. ${m.fullName}</b> ✅\n` +
+      `   📍 ${m.livingPlace} | 💼 ${m.occupation}\n` +
+      (m.isProxyRegistration ? `   🤝 የተመዘገበው በ፦ ${m.registeredByName || 'ጓደኛ'}\n` : '') +
+      `\n`;
+
+    if (text.length + item.length > 3800) {
+      await ctx.reply(text, { parse_mode: 'HTML' });
+      text = '';
+    }
+    text += item;
+  }
+
+  if (text.trim()) {
+    await ctx.reply(text, { parse_mode: 'HTML', ...registeredUserKeyboard });
+  }
+}
+
 
 // ---------------------------------------------
 // INLINE ACTION HANDLERS (ADMIN APPROVE / REJECT / DELETE)
@@ -338,24 +485,21 @@ bot.command('start', async (ctx) => {
   // Check if user is already registered
   const existing = await getRegistrationByTelegramId(userId);
   if (existing) {
-    const statusNote =
-      existing.verificationStatus === 'Approved'
-        ? '✅ ምዝገባዎ በአስተዳዳሪው ጸድቋል (Approved)'
-        : existing.verificationStatus === 'Rejected'
-        ? '❌ ምዝገባዎ ውድቅ ተደርጓል (Rejected)'
-        : '⏳ ምዝገባዎ በአስተዳዳሪው ማረጋገጫ በመጠባበቅ ላይ ነው (Pending Approval)';
-
-    await ctx.reply(
-      `ሰላም <b>${existing.fullName}</b>! ቀደም ሲል በሳንኮራ የመኖሪያ ቤት መሬት ፈላጊዎች ዝርዝር ውስጥ ተመዝግበዋል።\n\n` +
-        `🛡️ <b>ሁኔታ፦</b> ${statusNote}\n` +
-        `📅 <b>የተመዘገቡበት ቀን፦</b> ${new Date(existing.registrationDate).toLocaleDateString('am-ET')}\n\n` +
-        `የተመዘገቡትን መረጃ ለመመልከት ወይም ቴሌግራም የማይጠቀሙ ሌላ ፍላጎት ያላቸውን ሰዎች ለመመዝገብ ከታች ያሉትን አማራጮች ይጠቀሙ፦`,
-      { parse_mode: 'HTML', ...registeredUserKeyboard }
-    );
+    await sendMemberStatusReport(ctx, existing);
     return;
   }
 
-  // New registration prompt
+  // New member attempting to register: Check if registration is open
+  const open = await isRegistrationOpen();
+  if (!open) {
+    await ctx.reply(REGISTRATION_FINISHED_MSG, {
+      parse_mode: 'HTML',
+      ...removeKeyboard,
+    });
+    return;
+  }
+
+  // New registration prompt if open
   const session = await getSession(userId, username);
   session.step = 'ASK_CONFIRM_INTEREST';
   session.draft = { telegramUserId: userId, telegramUsername: username };
@@ -379,6 +523,11 @@ bot.command('cancel', async (ctx) => {
   );
 });
 
+// Display the selected list above for bot user
+bot.command('selected', sendSelectedMembersList);
+bot.command('list', sendSelectedMembersList);
+bot.command('approved', sendSelectedMembersList);
+
 // /help command
 bot.command('help', async (ctx) => {
   const isAdm = ctx.from && isAdmin(ctx.from.id);
@@ -388,9 +537,9 @@ bot.command('help', async (ctx) => {
     `ሁሉም መረጃዎች በደህንነት ዳታቤዝ ውስጥ ተጠብቀው ይቆያሉ።\n\n` +
     `<b>ትዕዛዞች፦</b>\n` +
     `• /start — ምዝገባ ለመጀመር ወይም ሁኔታዎን ለማየት\n` +
-    `• /status — የተመዘገቡትን መረጃዎን ለማየት\n` +
+    `• /status — የተመዘገቡትን መረጃዎንና የጓደኞችዎን ሁኔታ ለማየት (ከይፋዊ ምስል ጋር)\n` +
+    `• /selected — የጸደቁ አባላት ይፋዊ ዝርዝር ማሳያ\n` +
     `• /edit — የተመዘገቡትን መረጃ ለማስተካከል\n` +
-    `• /add_friend — ቴሌግራም የማይጠቀም ሌላ ፍላጎት ያለው ሰው ለመመዝገብ\n` +
     `• /cancel — በሂደት ላይ ያለ ምዝገባን ለማቋረጥ\n` +
     `• /help — ይህን መመሪያ ለማየት\n`;
 
@@ -399,6 +548,9 @@ bot.command('help', async (ctx) => {
       `\n👑 <b>የአስተዳዳሪ (Admin) ትዕዛዞች፦</b>\n` +
       `• /admin — የአስተዳዳሪ መቆጣጠሪያ ሰሌዳ\n` +
       `• /pending — ማረጋገጫ የሚጠብቁትን ለማየትና ለማጽደቅ\n` +
+      `• /close_registration — የምዝገባ ጊዜ ማብቃቱን ማወጅ (Close Registration)\n` +
+      `• /open_registration — ምዝገባን እንደገና መክፈት (Open Registration)\n` +
+      `• /broadcast_time_up — 'ጊዜው ተጠናቋል' የሚል ማሳወቂያ በምስል ለአባላት መላክ\n` +
       `• /delete &lt;ስም/ስልክ&gt; — አባልን ከዳታቤዝ በቋሚነት ለመሰረዝ\n` +
       `• /count — የተመዘገቡ አባላት ጠቅላላ ቁጥርና ማጠቃለያ\n` +
       `• /members — የተመዘገቡ አባላት ዝርዝር\n` +
@@ -410,18 +562,95 @@ bot.command('help', async (ctx) => {
   await ctx.reply(text, { parse_mode: 'HTML' });
 });
 
-// /status command
+// /status command: displays official report image + user status + friend approval status
 bot.command('status', async (ctx) => {
   if (!ctx.from) return;
   const existing = await getRegistrationByTelegramId(String(ctx.from.id));
   if (!existing) {
+    const open = await isRegistrationOpen();
+    if (!open) {
+      await ctx.reply(REGISTRATION_FINISHED_MSG, {
+        parse_mode: 'HTML',
+        ...removeKeyboard,
+      });
+      return;
+    }
     await ctx.reply(`እስካሁን አልተመዘገቡም። ለመመዝገብ /start ብለው ይጀምሩ።`, removeKeyboard);
     return;
   }
-  await ctx.reply(formatRecordSummary(existing), {
-    parse_mode: 'HTML',
-    ...registeredUserKeyboard,
-  });
+  await sendMemberStatusReport(ctx, existing);
+});
+
+// Admin toggle registration commands
+bot.command('close_registration', async (ctx) => {
+  if (!ctx.from || !isAdmin(ctx.from.id)) {
+    return ctx.reply('ይህን ትዕዛዝ ለመጠቀም ፈቃድ የለዎትም።');
+  }
+  await setRegistrationOpen(false);
+  await ctx.reply(
+    `🔒 <b>የምዝገባ ጊዜው በይፋ ተዘግቷል (Time is up for registration)።</b>\nአሁን አዲስ አባላት ሲመጡ "Registration is finished" መልእክት ይደርሳቸዋል።`,
+    { parse_mode: 'HTML' }
+  );
+});
+
+bot.command('open_registration', async (ctx) => {
+  if (!ctx.from || !isAdmin(ctx.from.id)) {
+    return ctx.reply('ይህን ትዕዛዝ ለመጠቀም ፈቃድ የለዎትም።');
+  }
+  await setRegistrationOpen(true);
+  await ctx.reply(
+    `🟢 <b>ምዝገባው በይፋ ተከፍቷል (Registration is Open)።</b>`,
+    { parse_mode: 'HTML' }
+  );
+});
+
+bot.command('broadcast_time_up', async (ctx) => {
+  if (!ctx.from || !isAdmin(ctx.from.id)) {
+    return ctx.reply('ይህን ትዕዛዝ ለመጠቀም ፈቃድ የለዎትም።');
+  }
+
+  const all = await getAllRegistrations();
+  const recipientIds = new Set<string>();
+  for (const r of all) {
+    if (r.isProxyRegistration && r.registeredByTelegramId) {
+      recipientIds.add(String(r.registeredByTelegramId));
+    } else if (r.telegramUserId) {
+      recipientIds.add(String(r.telegramUserId));
+    }
+  }
+
+  const list = Array.from(recipientIds);
+  await ctx.reply(`⏳ ለ ${list.length} የተመዘገቡ አባላት 'የምዝገባ ጊዜው ተጠናቋል' የሚል ማስታወቂያ በምስል በመላክ ላይ...`);
+
+  const imgBuf = getNotificationImageBuffer();
+  let sent = 0;
+  let fail = 0;
+
+  for (const uid of list) {
+    try {
+      const caption =
+        `🔔 <b>ይፋዊ ማሳወቂያ፦ የምዝገባ ጊዜው ተጠናቋል!</b>\n\n` +
+        `በሳንኮራ የመኖሪያ ቤት መሬት ምዝገባ ላይ ስለተሳተፉ እናመሰግናለን። የተመዘገቡ አባላት ዝርዝርና ይፋዊ ሪፖርት ከላይ በምስሉ ቀርቧል።\n\n` +
+        `የእርስዎንና በእርስዎ በኩል የተመዘገቡ ጓደኞችዎን ሁኔታ ለማረጋገጥ በቦቱ ውስጥ <b>/status</b> ብለው ይላኩ።\n\n` +
+        `<b>Registration is finished thank for your interest to be with us.</b>`;
+
+      if (imgBuf) {
+        await bot.telegram.sendPhoto(Number(uid), { source: imgBuf }, {
+          caption,
+          parse_mode: 'HTML',
+        });
+      } else {
+        await bot.telegram.sendMessage(Number(uid), caption, {
+          parse_mode: 'HTML',
+        });
+      }
+      sent++;
+    } catch {
+      fail++;
+    }
+  }
+
+  await ctx.reply(`✅ ማሳወቂያው ለ ${sent} አባላት ተልኳል! (ያልተሳካ፦ ${fail})`);
 });
 
 // /edit command
@@ -442,6 +671,14 @@ bot.command('edit', async (ctx) => {
 // /add_friend command: allow registering another interested person who does not use telegram
 bot.command('add_friend', async (ctx) => {
   if (!ctx.from) return;
+  const open = await isRegistrationOpen();
+  if (!open) {
+    return ctx.reply(
+      `🔔 <b>የምዝገባ ጊዜው ተጠናቋል!</b>\n\nበአሁኑ ሰዓት ተጨማሪ አዲስ አባል መመዝገብ አይቻልም። ከእኛ ጋር ለመሆን ላሳዩት ፍላጎት ከልብ እናመሰግናለን።\n\n<b>Registration is finished thank for your interest to be with us.</b>\n\nየጸደቁ አባላት ዝርዝርን ለመመልከት /selected ይጠቀሙ።`,
+      { parse_mode: 'HTML', ...registeredUserKeyboard }
+    );
+  }
+
   const userId = String(ctx.from.id);
   const session = await getSession(userId, ctx.from.username);
   const existing = await getRegistrationByTelegramId(userId);
@@ -493,6 +730,68 @@ bot.command('admin', async (ctx) => {
       `• /export — መረጃዎችን በCSV ፋይል ማውረድ`,
     { parse_mode: 'HTML' }
   );
+});
+
+bot.command('kebele', async (ctx) => {
+  if (!ctx.from || !isAdmin(ctx.from.id)) {
+    return ctx.reply('ይህን ትዕዛዝ ለመጠቀም ፈቃድ የለዎትም።');
+  }
+
+  const queryText = ctx.message.text.replace('/kebele', '').trim();
+  const imgBuf = getNotificationImageBuffer();
+  const caption =
+    `🆔 <b>የቀበሌ መታወቂያ ማስታወሻ (Kebele ID Notice)</b>\n\n` +
+    `<b>You are member for sankora land registration please next You should have kebele id up to 15/2/2019 E.C</b>\n\n` +
+    `የሳንኮራ መሬት ምዝገባ አባል ነዎት። ቀጣይ ማስታወሻ፦ እስከ 15/2/2019 ዓ.ም ድረስ የታደሰ የቀበሌ መታወቂያ ሊኖርዎት ይገባል።`;
+
+  if (queryText) {
+    const results = await searchRegistrations(queryText);
+    if (results.length === 0) {
+      return ctx.reply(`"<b>${queryText}</b>" የሚል አባል አልተገኘም።`, { parse_mode: 'HTML' });
+    }
+    let sent = 0;
+    for (const r of results) {
+      const recipientId = r.isProxyRegistration ? r.registeredByTelegramId : r.telegramUserId;
+      if (recipientId) {
+        try {
+          if (imgBuf) {
+            await bot.telegram.sendPhoto(Number(recipientId), { source: imgBuf }, { caption, parse_mode: 'HTML' });
+          } else {
+            await bot.telegram.sendMessage(Number(recipientId), caption, { parse_mode: 'HTML' });
+          }
+          sent++;
+        } catch (e) {
+          console.warn('Failed to send kebele notice:', e);
+        }
+      }
+    }
+    return ctx.reply(`✅ የቀበሌ መታወቂያ ማስታወሻው ለ ${sent} ተጠቃሚዎች ተልኳል።`);
+  } else {
+    const approved = await getApprovedRegistrations();
+    const recipientIds = new Set<string>();
+    for (const r of approved) {
+      if (r.isProxyRegistration && r.registeredByTelegramId) {
+        recipientIds.add(String(r.registeredByTelegramId));
+      } else if (r.telegramUserId) {
+        recipientIds.add(String(r.telegramUserId));
+      }
+    }
+    const list = Array.from(recipientIds);
+    let sent = 0;
+    for (const uid of list) {
+      try {
+        if (imgBuf) {
+          await bot.telegram.sendPhoto(Number(uid), { source: imgBuf }, { caption, parse_mode: 'HTML' });
+        } else {
+          await bot.telegram.sendMessage(Number(uid), caption, { parse_mode: 'HTML' });
+        }
+        sent++;
+      } catch (e) {
+        console.warn('Failed to broadcast kebele notice:', e);
+      }
+    }
+    return ctx.reply(`✅ የቀበሌ መታወቂያ ማስታወሻው ለ ${sent} የጸደቁ አባላት በሙሉ ተልኳል!`);
+  }
 });
 
 bot.command('pending', async (ctx) => {
@@ -604,6 +903,22 @@ bot.command('count', async (ctx) => {
   );
 });
 
+// Smart formatter
+function formatMember(r: RegistrationRecord, idx: number): string {
+  const statusIcon = r.verificationStatus === 'Approved' ? '✅' : r.verificationStatus === 'Rejected' ? '❌' : '⏳';
+  return (
+    `👤 <b>${idx + 1}. ${r.fullName}</b> ${statusIcon}\n` +
+    `📱 ስልክ፦ <code>${r.phoneNumber}</code>\n` +
+    `📍 ቦታ፦ ${r.livingPlace}\n` +
+    `💼 ስራ፦ ${r.occupation}\n` +
+    `🛡️ ሁኔታ፦ ${r.verificationStatus}\n` +
+    (r.isProxyRegistration
+      ? `🤝 የመዘገበው፦ ${r.registeredByName || 'የቴሌግራም አባል'}`
+      : `📱 ቴሌግራም፦ ${r.telegramUsername || r.telegramUserId}`) +
+    `\n----------------------------`
+  );
+}
+
 bot.command('members', async (ctx) => {
   if (!ctx.from || !isAdmin(ctx.from.id)) {
     return ctx.reply('ይህን ትዕዛዝ ለመጠቀም ፈቃድ የለዎትም።');
@@ -621,20 +936,11 @@ bot.command('members', async (ctx) => {
 
   for (let idx = 0; idx < recent.length; idx++) {
     const r = recent[idx];
-    const statusIcon = r.verificationStatus === 'Approved' ? '✅' : r.verificationStatus === 'Rejected' ? '❌' : '⏳';
     const inline = Markup.inlineKeyboard([
       [Markup.button.callback('🗑️ በቋሚነት ሰርዝ', `del_${r.id}`)],
     ]);
 
-    await ctx.reply(
-      `<b>${idx + 1}. ${r.fullName}</b> ${statusIcon}\n` +
-        `   📱 ስልክ፦ <code>${r.phoneNumber}</code>\n` +
-        `   📍 ቦታ፦ ${r.livingPlace} | 💼 ስራ፦ ${r.occupation}\n` +
-        (r.isProxyRegistration
-          ? `   🤝 የመዘገበው፦ ${r.registeredByName || 'የቴሌግራም አባል'}\n`
-          : `   📱 ቴሌግራም፦ ${r.telegramUsername || r.telegramUserId}\n`),
-      { parse_mode: 'HTML', ...inline }
-    );
+    await ctx.reply(formatMember(r, idx), { parse_mode: 'HTML', ...inline });
   }
 
   if (all.length > 6) {
@@ -660,20 +966,15 @@ bot.command('search', async (ctx) => {
   }
 
   let text = `🔍 <b>የፍለጋ ውጤቶች ("${queryText}")፦ ${results.length} ተገኝተዋል</b>\n\n`;
+  await ctx.reply(text, { parse_mode: 'HTML' });
+
   for (let i = 0; i < Math.min(results.length, 5); i++) {
     const r = results[i];
-    const statusIcon = r.verificationStatus === 'Approved' ? '✅' : r.verificationStatus === 'Rejected' ? '❌' : '⏳';
     const inline = Markup.inlineKeyboard([
       [Markup.button.callback('🗑️ በቋሚነት ሰርዝ', `del_${r.id}`)],
     ]);
 
-    await ctx.reply(
-      `<b>${i + 1}. ${r.fullName}</b> ${statusIcon}\n` +
-        `   📱 ስልክ፦ <code>${r.phoneNumber}</code> | 📍 ቦታ፦ ${r.livingPlace}\n` +
-        `   💼 ስራ፦ ${r.occupation}\n` +
-        (r.isProxyRegistration ? `   🤝 የመዘገበው፦ ${r.registeredByName}\n` : ''),
-      { parse_mode: 'HTML', ...inline }
-    );
+    await ctx.reply(formatMember(r, i), { parse_mode: 'HTML', ...inline });
   }
 });
 
@@ -741,20 +1042,30 @@ bot.on('text', async (ctx) => {
   if (text.startsWith('/')) return;
 
   // Handle Registered User Quick Actions
-  if (text === '📋 የምዝገባ መረጃዬን አሳይ') {
+  if (text === '📋 የምዝገባ መረጃዬን አሳይ' || text === '📋 የምዝገባ ሁኔታዬንና ጓደኞቼን አሳይ') {
     const existing = await getRegistrationByTelegramId(userId);
     if (existing) {
-      return ctx.reply(formatRecordSummary(existing), {
-        parse_mode: 'HTML',
-        ...registeredUserKeyboard,
-      });
+      return sendMemberStatusReport(ctx, existing);
     }
+  }
+
+  // Display the selected list above for bot user
+  if (text === '📜 የጸደቁ አባላት ዝርዝር (Selected List)' || text === '📜 የጸደቁ አባላት ዝርዝር') {
+    return sendSelectedMembersList(ctx);
   }
 
   if (
     text === '➕ ሌላ ፍላጎት ያለው ሰው መመዝገብ (ቴሌግራም የሌለው)' ||
     text === '➕ አዎ፣ ሌላ ፍላጎት ያለው ሰው መመዝገብ እፈልጋለሁ'
   ) {
+    const open = await isRegistrationOpen();
+    if (!open) {
+      return ctx.reply(REGISTRATION_FINISHED_MSG, {
+        parse_mode: 'HTML',
+        ...registeredUserKeyboard,
+      });
+    }
+
     const session = await getSession(userId, ctx.from.username);
     const existing = await getRegistrationByTelegramId(userId);
 
@@ -815,6 +1126,16 @@ bot.on('text', async (ctx) => {
   }
 
   const session = await getSession(userId, ctx.from.username);
+  const open = await isRegistrationOpen();
+  const existing = await getRegistrationByTelegramId(userId);
+
+  if (!open && !existing && session.step && session.step !== 'IDLE') {
+    await clearSession(userId);
+    return ctx.reply(REGISTRATION_FINISHED_MSG, {
+      parse_mode: 'HTML',
+      ...removeKeyboard,
+    });
+  }
 
   // STEP 1: CONFIRM INTEREST
   if (session.step === 'ASK_CONFIRM_INTEREST') {
@@ -1202,8 +1523,25 @@ bot.on('text', async (ctx) => {
   }
 
   // Default fallback if not in any active step
+  const isOpenNow = await isRegistrationOpen();
+  const existingUser = await getRegistrationByTelegramId(userId);
+
+  if (!existingUser && !isOpenNow) {
+    return ctx.reply(REGISTRATION_FINISHED_MSG, {
+      parse_mode: 'HTML',
+      ...removeKeyboard,
+    });
+  }
+
+  if (existingUser) {
+    return sendMemberStatusReport(ctx, existingUser);
+  }
+
   return ctx.reply(
     `ሰላም! ምዝገባ ለመጀመር ወይም ሁኔታዎን ለማየት /start ብለው ይላኩ። ተጨማሪ መረጃ ለማግኘት /help ይጠቀሙ።`,
     removeKeyboard
   );
 });
+
+// Launch bot
+bot.launch().catch(console.error);

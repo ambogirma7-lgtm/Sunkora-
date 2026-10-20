@@ -93,6 +93,7 @@ export default function HomePage() {
   const [showNotifyModal, setShowNotifyModal] = useState(false);
   const [notifyMessage, setNotifyMessage] = useState('');
   const [notifyTarget, setNotifyTarget] = useState<'APPROVED' | 'ALL'>('APPROVED');
+  const [sendWithImage, setSendWithImage] = useState(false);
   const [sendingNotification, setSendingNotification] = useState(false);
   const [notificationStatus, setNotificationStatus] = useState<{
     type: 'success' | 'error';
@@ -101,6 +102,10 @@ export default function HomePage() {
   const [notificationLogs, setNotificationLogs] = useState<NotificationLog[]>([]);
   const [loadingLogs, setLoadingLogs] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+
+  // Registration Open/Closed (Time is Up) State
+  const [registrationOpen, setRegistrationOpen] = useState(false);
+  const [togglingRegistration, setTogglingRegistration] = useState(false);
 
   // Permanent Delete Modal State (avoids window.confirm in iframe)
   const [memberToDelete, setMemberToDelete] = useState<MemberRecord | null>(null);
@@ -115,6 +120,10 @@ export default function HomePage() {
           headers: { Accept: 'application/json' },
         }),
         fetch('/api/admin/webhook', {
+          cache: 'no-store',
+          headers: { Accept: 'application/json' },
+        }),
+        fetch('/api/admin/registration-status', {
           cache: 'no-store',
           headers: { Accept: 'application/json' },
         }),
@@ -143,12 +152,38 @@ export default function HomePage() {
           setWebhookInfo(whData.webhookInfo);
         }
       }
+
+      if (results[2].status === 'fulfilled' && results[2].value.ok) {
+        const stData = await results[2].value.json().catch(() => null);
+        if (typeof stData?.isOpen === 'boolean') {
+          setRegistrationOpen(stData.isOpen);
+        }
+      }
     } catch {
       // Graceful fallback for iframe reloads
     } finally {
       setLoading(false);
     }
   }, []);
+
+  const toggleRegistrationStatus = async (newVal: boolean) => {
+    setTogglingRegistration(true);
+    try {
+      const res = await fetch('/api/admin/registration-status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ isOpen: newVal }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setRegistrationOpen(data.isOpen);
+      }
+    } catch (err) {
+      console.error('Failed to toggle registration status:', err);
+    } finally {
+      setTogglingRegistration(false);
+    }
+  };
 
   const loadNotificationLogs = useCallback(async () => {
     setLoadingLogs(true);
@@ -247,6 +282,7 @@ export default function HomePage() {
         body: JSON.stringify({
           message: notifyMessage.trim(),
           target: notifyTarget,
+          withImage: sendWithImage,
           adminName: 'Natananor',
         }),
       });
@@ -255,7 +291,7 @@ export default function HomePage() {
       if (data.success) {
         setNotificationStatus({
           type: 'success',
-          text: `✅ ማሳወቂያው ለ ${data.sentCount} አባላት በተሳካ ሁኔታ ተልኳል! (የከሸፈ፦ ${data.failedCount || 0})`,
+          text: `✅ ማሳወቂያው ለ ${data.sentCount} አባላት በተሳካ ሁኔታ ተልኳል${data.withImage ? ' (ከይፋዊ ሪፖርት ምስል ጋር)' : ''}! (የከሸፈ፦ ${data.failedCount || 0})`,
         });
         setNotifyMessage('');
         loadNotificationLogs();
@@ -335,16 +371,34 @@ export default function HomePage() {
   // Notification presets in respectful Amharic
   const notificationPresets = [
     {
+      title: '🆔 የቀበሌ መታወቂያ ማሳሰቢያ (Kebele ID Notice - Image)',
+      text: 'You are member for sankora land registration please next You should have kebele id up to 15/2/2019 E.C\n\nየሳንኮራ መሬት ምዝገባ አባል ነዎት። ቀጣይ ማስታወሻ፦ እስከ 15/2/2019 ዓ.ም ድረስ የታደሰ የቀበሌ መታወቂያ ሊኖርዎት ይገባል።',
+      withImage: true,
+      target: 'APPROVED' as const,
+    },
+    {
+      title: '⏰ የምዝገባ ጊዜው ተጠናቋል (Time is Up - Image)',
+      text: 'የምዝገባ ጊዜው ተጠናቋል! በሳንኮራ የመኖሪያ ቤት መሬት ምዝገባ ላይ ስለተሳተፉ ከልብ እናመሰግናለን። የተመዘገቡ አባላት ዝርዝርና ይፋዊ ሪፖርት ከላይ በምስሉ ቀርቧል። የእርስዎንና የጓደኞችዎን ሁኔታ ለማየት በቦቱ ውስጥ /status ብለው ይላኩ።\n\nRegistration is finished thank for your interest to be with us.',
+      withImage: true,
+      target: 'ALL' as const,
+    },
+    {
       title: '📢 ጠቅላላ ስብሰባ ጥሪ',
       text: 'ሰላም የተከበራችሁ የሳንኮራ የመኖሪያ ቤት መሬት ፈላጊዎች አባላት፣ በመጪው እሁድ ጠቃሚ የጋራ ስብሰባ ስለተዘጋጀ በሰዓቱ እንድትገኙ በአክብሮት እናሳስባለን።',
+      withImage: false,
+      target: 'APPROVED' as const,
     },
     {
       title: '📄 ሰነድ / ማስረጃ ማቅረቢያ',
       text: 'ሰላም የተከበራችሁ አባላት፣ የምዝገባ ሂደቱን ለማጠናቀቅ የሚያስፈልጉ ተጨማሪ መረጃዎችን ወይም ሰነዶችን እንድታዘጋጁ በትህትና እናሳውቃለን።',
+      withImage: false,
+      target: 'APPROVED' as const,
     },
     {
       title: '⚖️ የሂደት እና የቦታ መረጃ',
       text: 'ሰላም የተከበራችሁ አባላት፣ የመኖሪያ መሬት አሰጣጥ ቅደም ተከተልና የጣቢያ መረጃ ዝግጅት በጥሩ ሁኔታ እየተከናወነ ይገኛል። ዝርዝሩን በቅርቡ እናሳውቃለን።',
+      withImage: false,
+      target: 'APPROVED' as const,
     },
   ];
 
@@ -435,6 +489,83 @@ export default function HomePage() {
             </button>
           </div>
         </header>
+
+        {/* Registration Status Banner & Controls */}
+        <div
+          className={`p-4 rounded-xl border flex flex-col md:flex-row md:items-center justify-between gap-4 transition ${
+            !registrationOpen
+              ? 'bg-amber-950/30 border-amber-500/40 text-amber-200'
+              : 'bg-emerald-950/30 border-emerald-500/40 text-emerald-200'
+          }`}
+        >
+          <div className="flex items-center gap-3.5">
+            <div
+              className={`w-11 h-11 rounded-xl flex items-center justify-center shrink-0 ${
+                !registrationOpen
+                  ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                  : 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+              }`}
+            >
+              {!registrationOpen ? <Clock className="w-6 h-6" /> : <CheckCircle2 className="w-6 h-6" />}
+            </div>
+            <div>
+              <div className="flex items-center gap-2.5">
+                <span className="font-bold text-base text-white">
+                  {!registrationOpen
+                    ? '⏰ የምዝገባ ጊዜው ተጠናቋል (Registration Closed - Time is Up)'
+                    : '🟢 የምዝገባ ጊዜው ክፍት ነው (Registration is Open)'}
+                </span>
+                <span
+                  className={`px-2 py-0.5 rounded text-xs font-bold uppercase tracking-wider ${
+                    !registrationOpen
+                      ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                      : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                  }`}
+                >
+                  {!registrationOpen ? 'CLOSED' : 'OPEN'}
+                </span>
+              </div>
+              <p className="text-xs text-slate-400 mt-1">
+                {!registrationOpen
+                  ? 'አዳዲስ አባላት ሲገቡ "Registration is finished thank for your interest to be with us" የሚል ምላሽ ይሰጣል። የተመዘገቡ አባላት /status ሲሉ ሁኔታቸውንና የጸደቁትን ዝርዝር በምስል ያያሉ።'
+                  : 'ማንኛውም ሰው በቴሌግራም ቦቱ /start በማለት እራሱንና ጓደኞቹን መመዝገብ ይችላል።'}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2.5">
+            <button
+              onClick={() => toggleRegistrationStatus(!registrationOpen)}
+              disabled={togglingRegistration}
+              className={`px-3.5 py-2 rounded-lg font-medium text-xs transition border flex items-center gap-1.5 ${
+                !registrationOpen
+                  ? 'bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border-emerald-500/40'
+                  : 'bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 border-amber-500/40'
+              }`}
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${togglingRegistration ? 'animate-spin' : ''}`} />
+              {!registrationOpen ? 'ምዝገባን ክፈት (Open Registration)' : 'ምዝገባውን ዝጋ (Close / Time is Up)'}
+            </button>
+
+            {!registrationOpen && (
+              <button
+                onClick={() => {
+                  setNotifyMessage(
+                    'የምዝገባ ጊዜው ተጠናቋል! በሳንኮራ የመኖሪያ ቤት መሬት ምዝገባ ላይ ስለተሳተፉ ከልብ እናመሰግናለን። የተመዘገቡ አባላት ዝርዝርና ይፋዊ ሪፖርት ከላይ በምስሉ ቀርቧል። የእርስዎንና የጓደኞችዎን ሁኔታ ለማየት በቦቱ ውስጥ /status ብለው ይላኩ።\n\nRegistration is finished thank for your interest to be with us.'
+                  );
+                  setSendWithImage(true);
+                  setNotifyTarget('ALL');
+                  setShowNotifyModal(true);
+                  loadNotificationLogs();
+                }}
+                className="px-3.5 py-2 rounded-lg font-medium text-xs bg-amber-600 hover:bg-amber-500 text-white transition shadow flex items-center gap-1.5"
+              >
+                <Bell className="w-3.5 h-3.5" />
+                &apos;ጊዜው ተጠናቋል&apos; ማሳወቂያ ላክ (Broadcast)
+              </button>
+            )}
+          </div>
+        </div>
 
         {/* Telegram Connection & Database Status Panel */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -871,13 +1002,31 @@ export default function HomePage() {
                     <button
                       key={idx}
                       type="button"
-                      onClick={() => setNotifyMessage(preset.text)}
+                      onClick={() => {
+                        setNotifyMessage(preset.text);
+                        if (preset.withImage !== undefined) setSendWithImage(preset.withImage);
+                        if (preset.target) setNotifyTarget(preset.target);
+                      }}
                       className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-slate-300 border border-slate-700 transition"
                     >
                       {preset.title}
                     </button>
                   ))}
                 </div>
+              </div>
+
+              {/* Attach Image Option */}
+              <div className="flex items-center gap-2.5 p-3 rounded-xl bg-slate-950/60 border border-slate-800">
+                <input
+                  type="checkbox"
+                  id="sendWithImage"
+                  checked={sendWithImage}
+                  onChange={(e) => setSendWithImage(e.target.checked)}
+                  className="w-4 h-4 rounded border-slate-700 bg-slate-900 text-amber-500 focus:ring-amber-500 cursor-pointer"
+                />
+                <label htmlFor="sendWithImage" className="text-xs text-slate-300 font-medium cursor-pointer select-none">
+                  📸 ይፋዊ የጸደቁ አባላት ሪፖርት ምስል አብረህ ላክ (Attach Official Report Image)
+                </label>
               </div>
 
               {/* Message Input */}

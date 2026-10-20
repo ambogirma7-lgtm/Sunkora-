@@ -397,3 +397,60 @@ export function generateCSV(records: RegistrationRecord[]): string {
   return '\uFEFF' + [headers.join(','), ...rows.map((row) => row.join(','))].join('\n');
 }
 
+// In-memory cache for registration status (defaults to false because "Time is up for registration")
+let cachedRegistrationOpen: boolean = false;
+
+export async function isRegistrationOpen(): Promise<boolean> {
+  try {
+    const snap = await getDoc(doc(db, 'settings', 'registration_config'));
+    if (snap.exists()) {
+      const data = snap.data();
+      if (typeof data?.isOpen === 'boolean') {
+        cachedRegistrationOpen = data.isOpen;
+        return data.isOpen;
+      }
+    }
+  } catch (err) {
+    console.warn('Could not read registration status config from firestore:', err);
+  }
+  return cachedRegistrationOpen;
+}
+
+export async function setRegistrationOpen(isOpen: boolean): Promise<boolean> {
+  cachedRegistrationOpen = isOpen;
+  try {
+    await setDoc(doc(db, 'settings', 'registration_config'), {
+      isOpen,
+      updatedAt: new Date().toISOString(),
+    });
+    return true;
+  } catch (err) {
+    console.warn('Could not save registration config to firestore:', err);
+    return false;
+  }
+}
+
+export async function getFriendsRegisteredByUser(telegramUserId: string): Promise<RegistrationRecord[]> {
+  try {
+    const all = await getAllRegistrations();
+    const uidStr = String(telegramUserId);
+    return all.filter(
+      (r) => Boolean(r.isProxyRegistration) && String(r.registeredByTelegramId || '') === uidStr
+    );
+  } catch (err) {
+    console.error('Error fetching friends registered by user:', err);
+    return [];
+  }
+}
+
+export async function getApprovedRegistrations(): Promise<RegistrationRecord[]> {
+  try {
+    const all = await getAllRegistrations();
+    return all.filter((r) => r.verificationStatus === 'Approved');
+  } catch (err) {
+    console.error('Error fetching approved registrations:', err);
+    return [];
+  }
+}
+
+

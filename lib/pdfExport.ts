@@ -1,4 +1,3 @@
-import { jsPDF } from 'jspdf';
 import type { RegistrationRecordPure } from './registrationUtils';
 
 interface MemberForPDF {
@@ -20,6 +19,8 @@ export async function exportRecordsToPDF(
   }
 ): Promise<void> {
   if (typeof window === 'undefined') return;
+
+  const { jsPDF } = await import('jspdf');
 
   const itemsPerPage = 14;
   const totalPages = Math.ceil(records.length / itemsPerPage) || 1;
